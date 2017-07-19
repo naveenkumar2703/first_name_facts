@@ -1,0 +1,276 @@
+---
+title: "Compute First Name facts"
+output: html_document
+---
+
+## Author: Naveenkumar Ramaraju
+#### Email: naveenkumar2703@gmail.com
+
+
+Let's get the data first.
+```{r}
+library(data.table)
+
+temp <- tempfile() # create a temp file
+download.file("http://www.ssa.gov/oact/babynames/state/namesbystate.zip",temp) # download content to temp file
+
+tempDir <- tempdir() # cretae a temp directory
+tempDir <- paste(tempDir, 'babynames', sep="/") # create a folder
+unzip(temp,exdir=tempDir) # extract contents inside the temp directory
+setwd(tempDir)
+rm(temp)
+```
+
+Let's assemble the data
+
+```{r}
+files <- list.files(tempDir)
+files <- grep('.TXT',files,value = TRUE)
+
+# initialize a df
+df <- data.frame(SC=character(),
+                 Gender=character(), 
+                 Year=numeric(), 
+                 Name=character(),
+                 Occurrences=numeric())
+
+# collate all dfs
+for (i in 1:length(files))
+{
+  state_data <- fread(files[i])
+  colnames(state_data) <- colnames(df)
+  df <- rbind(df, state_data)
+}
+
+
+
+# aggregate all state data
+country_data_by_year <- df[, .(Occurrences=sum(Occurrences)), by = .(Name, Year, Gender)]
+country_data_by_year[ , `ratio_of_newbies` := Occurrences/sum(Occurrences) , by = Year ]
+
+# aggregate all year data
+country_data_all_time <- country_data_by_year[, .(Occurrences=sum(Occurrences), active_number_ofyears=length(Occurrences), average_popularity=sum(ratio_of_newbies)/length(ratio_of_newbies)), by = .(Name, Gender)]
+
+# aggregate all gender data
+country_data_all_time_all_gender <- country_data_all_time[, .(Occurrences=sum(Occurrences)), by = .(Name)]
+country_data_all_time_all_gender[order(-Occurrences)]
+
+# function to compute gender ambiguous names by year
+find_ambiguous_name_of_the_year <- function(all_year_data, year){
+male <- all_year_data[Year==year & Gender=='M', .(Occurrences=sum(Occurrences)), by=Name]
+female <- all_year_data[Year==year & Gender=='F', .(Occurrences=sum(Occurrences)), by=Name]
+unisex_names <- intersect(male$Name, female$Name)
+unisex_names <- sort(unisex_names)
+ambiguous_data <- all_year_data[Year==year & Name %in% unisex_names][order(Name)]
+dif_ratio <- abs(ambiguous_data[Gender=='M']$Occurrences - ambiguous_data[Gender=='F']$Occurrences)/(ambiguous_data[Gender=='M']$Occurrences + ambiguous_data[Gender=='F']$Occurrences)
+
+
+ambiguous_name <- unisex_names[match(min(dif_ratio), dif_ratio)]
+print(paste('Ambigous name in year', year, 'is', ambiguous_name))
+print(all_year_data[Year==year & Name==ambiguous_name])
+print(unisex_names)
+}
+
+find_ambiguous_name_of_the_year(country_data_by_year, 2013)
+find_ambiguous_name_of_the_year(country_data_by_year, 1945)
+
+#new_names_by_year <- country_data_by_year[, .(Occurrences=sum(Occurrences)), by = .(Year)]
+#new_names_by_year_gender <- country_data_by_year[, .(Occurrences=sum(Occurrences)), by = .(Year, Gender)]
+
+
+
+```
+
+
+```{r}
+total_named_babies <- sum(country_data_all_time$Occurrences) # This is roughly population size.
+
+# This function computes facts about a name between given time range.
+get_name_stats <- function(name, start_year=1910, end_year=2999, SC=NA){
+  
+  # filter the data for period
+  name_data <- country_data_by_year[Name==name & Year >= start_year & Year <= end_year][order(Year)]
+  if (dim(name_data)[1] == 0) # check if name exist in that period.
+  {
+    return (list(name, 0,0,FALSE,'N/A', 0, 0, 0, 0,'txt to add', 0,0, 0, 0))
+  }
+  
+  else if (dim(name_data)[1] == 1)
+  {
+    return (list(name, 5,name_data$Year,FALSE,'N/A', 1, 1, name_data$ratio_of_newbies, name_data$ratio_of_newbies,paste(5/total_named_babies), sum(name_data$Gender == 'F'), sum(name_data$Gender == 'M'), 0, 0))
+  }
+  
+  # aggregating the current name stat by gender
+  gender_agg_name_data <- name_data[, .(Occurrences=sum(Occurrences)), by=.(Gender)][order(Gender)]
+  
+  # computing masculinity and femininity of the name
+  male_ratio = 0.00
+  female_ratio = 0.00
+  gender_ratio = c(0,0)
+  total_names = 0
+  if (dim(gender_agg_name_data[Gender=='M'])[1] > 0) 
+  {
+    male_ratio = gender_agg_name_data[Gender=='M']$Occurrences
+    total_names = male_ratio
+  }
+  if (dim(gender_agg_name_data[Gender=='F'])[1] > 0) {
+    female_ratio = gender_agg_name_data[Gender=='F']$Occurrences
+    total_names = total_names + female_ratio
+  }
+  
+  
+  gender_ratio = c((female_ratio/total_names), (male_ratio/total_names))
+  
+  # computing the fraction of the name over population for all years
+  agg_name_data <- name_data[, .(Occurrences=sum(Occurrences), ratio_of_newbies=sum(ratio_of_newbies)), by=.(Year)][order(Year)]
+  name_trend <- agg_name_data$Occurrences
+  name_popularity_trend <- agg_name_data$ratio_of_newbies 
+  active_years <- agg_name_data$Year 
+  year_dif <- diff(active_years, lag = 1) # using lag to compute the trend
+  
+  # finding streak and maximum streak of number of years in which the name was found in data source
+  streak_years = c(active_years[1],active_years[which(year_dif != 1)])
+  if (length(streak_years) == 1) streak_years <- c(streak_years, active_years[length(active_years)])
+  max_streak <- max(diff(streak_years, lag=1))
+  max_name = max(name_trend)
+  min_name = 0
+  min_pop = 0
+  if (length(streak_years) <= 2)
+  {
+    min_name = min(name_trend)
+    min_pop = min(name_popularity_trend)
+  }
+  # computing best and worst years
+  max_pop = max(name_popularity_trend)
+  peak_year = active_years[which(name_popularity_trend == max(name_popularity_trend))]
+  
+  # computing trends
+  trend = diff(name_trend, lag = 1)
+  best_year = active_years[which(trend == max(trend))+1]
+  worst_year = active_years[which(trend == min(trend))+1]
+  
+  min_before_peak_year = min(name_popularity_trend[c(1:which(name_popularity_trend == max(name_popularity_trend)))])
+  maximum_pop_gain = max_pop - min_before_peak_year
+  maximum_pop_loss = max_pop - min(name_popularity_trend[c(which(name_popularity_trend == max(name_popularity_trend)):length(name_popularity_trend))])
+  
+  # generating trend text
+  trend_txt <- 'unavailable'
+  if (maximum_pop_gain > maximum_pop_loss)
+  {
+    min_cnt_peak_year = min(name_trend[c(1:which(name_trend == max(name_trend)))])
+    min_year_b4_peak = active_years[which(name_popularity_trend == min_before_peak_year)]
+    trend_txt <- paste('Gained ', maximum_pop_gain * 100, '% of all names given in a year between', min_year_b4_peak, 'and', peak_year,'. Grown from',min_cnt_peak_year,'names in a year to', max_name,'in a year.')
+  }
+  else
+  {
+    min_after_peak_year = min(name_popularity_trend[c(which(name_popularity_trend == max(name_popularity_trend)):length(name_popularity_trend))])
+    min_cnt_peak_year = min(name_trend[c(which(name_trend == max(name_trend)):length(name_trend))])
+    min_year_after_peak = active_years[which(name_popularity_trend == min_after_peak_year)]
+    trend_txt <- paste('Lost ', maximum_pop_loss * 100, '% of all names given in a year between',peak_year,'and',min_year_after_peak,'. Dropped from',max_name,'names in a year to',min_cnt_peak_year,'in a year')
+  }
+  
+  # check if name is growing name. Condition is arbitrary.
+  growing_name = FALSE
+  if (length(trend) > 2 & sum(trend[c(length(trend)-1, length(trend))]) > 0) growing_name = TRUE
+  
+  # put all stats in a list
+  curr_name_stat <- list(name, total_names,peak_year,growing_name,trend_txt, length(active_years), max_streak, name_popularity_trend[length(name_popularity_trend)], max_pop,paste(total_names/total_named_babies), gender_ratio[1],gender_ratio[2], maximum_pop_gain, maximum_pop_loss)
+  return  (curr_name_stat)
+}
+
+```
+
+Form data for each name 
+```{r}
+# getting unique names
+names <- unique(country_data_all_time[Occurrences > 100]$Name)
+
+name_stat <- data.table(Name=character(), 
+                 Names_sharred_by=numeric(),
+                 Most_Popular_Year=numeric(), 
+                 Gaining_Popularity=logical(),
+                 Trend=character(),
+                 active_years=numeric(),
+                 max_active_year_streak=numeric(),
+                 current_popularity_rank=numeric(),
+                 best_popularity_rank=numeric(),
+                 uniqueness=character(),
+                 female_gender_ratio=numeric(),
+                 male_gender_ratio=numeric(),
+                 maximum_gain=numeric(), maximum_loss=numeric())
+
+# compute stat for each unique name post 1980
+for (i in 1:length(names))
+{
+  name_stat <- rbind(name_stat, get_name_stats(names[i], start_year = 1980))
+}
+
+head(name_stat[order(-maximum_gain)][,.(Name, Trend, maximum_gain),],10)
+head(name_stat[order(-maximum_loss)][,.(Name, Trend, maximum_loss),],10)
+
+# store results
+write.csv(name_stat, file = "post_1980_names.csv")
+
+names <- unique(country_data_all_time$Name)
+name_stat <- data.table(Name=character(), 
+                 Names_sharred_by=numeric(),
+                 Most_Popular_Year=numeric(), 
+                 Gaining_Popularity=logical(),
+                 Trend=character(),
+                 active_years=numeric(),
+                 max_active_year_streak=numeric(),
+                 current_popularity_rank=numeric(),
+                 best_popularity_rank=numeric(),
+                 uniqueness=character(),
+                 female_gender_ratio=numeric(),
+                 male_gender_ratio=numeric(),
+                 maximum_gain=numeric(), maximum_loss=numeric())
+
+# compute stat for each unique name
+for (i in 1:length(names))
+{
+  print(i)
+  print(names[i])
+  name_stat <- rbind(name_stat, get_name_stats(names[i]))
+}
+head(name_stat[order(-maximum_gain)][,.(Name, Trend, maximum_gain),],10)
+head(name_stat[order(-maximum_loss)][,.(Name, Trend, maximum_loss),],10)
+
+# store the results in different formats
+write.csv(name_stat, file = "~/Documents/names.csv")
+write.csv(country_data_by_year, file = "~/Documents/names_by_year.csv")
+write.csv(country_data_all_time_all_gender, file = "~/Documents/names_count.csv")
+write.csv(country_data_all_time, file = "~/Documents/names_by_gender.csv")
+
+library(wordcloud)
+library(wordcloud2)
+# form a word clouds - pick one for header
+wordcloud(country_data_all_time_all_gender$Name,country_data_all_time_all_gender$Occurrences, scale=c(2.5,.25),min.freq=3, max.words=100, random.order=FALSE, rot.per=.15, colors=brewer.pal(8,"Dark2"))
+wc<-wordcloud(country_data_all_time_all_gender$Name,country_data_all_time_all_gender$Occurrences, scale=c(2.5,.25),min.freq=3, max.words=250, random.order=FALSE, rot.per=.15)
+wordcloud(country_data_all_time_all_gender$Name,country_data_all_time_all_gender$Occurrences, scale=c(2.5,.25),min.freq=3, max.words=500, random.order=FALSE, rot.per=.15, colors=brewer.pal(8,"Dark2"))
+wordcloud(country_data_all_time_all_gender$Name,country_data_all_time_all_gender$Occurrences, scale=c(2.5,.25),min.freq=3, max.words=1000, random.order=FALSE, rot.per=.15, colors=brewer.pal(8,"Dark2"))
+
+wordcloud2(data=data.frame(country_data_all_time_all_gender$Name,country_data_all_time_all_gender$Occurrences),size=.50, color='random-dark',minRotation = -pi/6, maxRotation = -pi/6, rotateRatio = 1)
+
+k<-data.frame(a=c('First Name Facts'),b=c(1))
+ff <- wordcloud(k$a,k$b, scale=c(3.5,.5), colors=brewer.pal(8,"Dark2"))
+
+# store in rds for ease of compression and efficiency later when deployed.
+name_stat<-read.csv("~/Documents/names.csv")
+drops <- c("X")
+name_stat <- name_stat[ , !(names(name_stat) %in% drops)]
+
+saveRDS(name_stat, "~/Documents/name_stat.rds")
+
+name_stat<-read.csv("~/Documents/names_by_gender.csv")
+drops <- c("X")
+name_stat <- name_stat[ , !(names(name_stat) %in% drops)]
+
+saveRDS(name_stat, "~/Documents/name_stat_by_gender.rds")
+
+name_stat<-read.csv("~/Documents/names_by_year.csv")
+drops <- c("X")
+name_stat <- name_stat[ , !(names(name_stat) %in% drops)]
+
+saveRDS(name_stat, "~/Documents/name_stat_by_year.rds")
+```
